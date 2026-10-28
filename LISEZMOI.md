@@ -7,7 +7,7 @@ Convertit un fichier OST « orphelin » (Outlook 2013, 2016, 2019 ou 365) en vra
 - **Windows 10 ou 11** avec **Outlook** installé. Outlook doit avoir été ouvert au moins une fois.
 - **Une connexion Internet au premier lancement.** Le convertisseur télécharge alors un Python portable (python.org) et la bibliothèque open source libpff (pypi.org) dans `%LOCALAPPDATA%\ost2pst`.
 
-Aucun droit administrateur n'est nécessaire, et WSL n'est pas nécessaire non plus.
+Aucun droit administrateur n'est nécessaire.
 
 ## Utilisation
 
