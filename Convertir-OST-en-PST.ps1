@@ -877,6 +877,48 @@ if __name__ == '__main__':
     main()
 '@
 
+# --- Contrôle de la taille du fichier OST ------------------------------------
+$SizeWarnGB = 20   # au-delà : conversion longue (plusieurs heures)
+$SizeMaxGB = 50    # limite par défaut d'un PST dans Outlook
+
+function Format-Size([double]$bytes) {
+    if ($bytes -ge 1GB) { return ('{0:N1} Go' -f ($bytes / 1GB)) }
+    return ('{0:N0} Mo' -f ($bytes / 1MB))
+}
+
+function Get-SizeWarnings([string]$ost, [string]$pst) {
+    $warnings = @()
+    if (-not $ost -or -not (Test-Path -LiteralPath $ost -PathType Leaf)) { return $warnings }
+    $size = (Get-Item -LiteralPath $ost).Length
+
+    if ($size -ge $SizeMaxGB * 1GB) {
+        $warnings += ("Le fichier OST est très volumineux ({0}). Outlook limite un fichier PST à 50 Go par défaut : la conversion risque de s'interrompre avant la fin." -f (Format-Size $size))
+    }
+    elseif ($size -ge $SizeWarnGB * 1GB) {
+        $warnings += ("Le fichier OST est volumineux ({0}). La conversion peut durer plusieurs heures : laissez le PC allumé et désactivez la mise en veille." -f (Format-Size $size))
+    }
+
+    # Espace disque : copie temporaire (disque système) + PST (disque de destination)
+    $need = @{}
+    $sysRoot = $env:SystemDrive + '\'
+    $need[$sysRoot] = [double]$size * 1.2
+    if ($pst) {
+        try {
+            $pstRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($pst))
+            if ($need.ContainsKey($pstRoot)) { $need[$pstRoot] += [double]$size } else { $need[$pstRoot] = [double]$size }
+        } catch {}
+    }
+    foreach ($root in $need.Keys) {
+        try {
+            $free = (New-Object IO.DriveInfo($root)).AvailableFreeSpace
+            if ($free -lt $need[$root]) {
+                $warnings += ("Espace disque insuffisant sur {0} : {1} libres, environ {2} nécessaires (copie temporaire et fichier PST)." -f $root.TrimEnd('\'), (Format-Size $free), (Format-Size $need[$root]))
+            }
+        } catch {}
+    }
+    return $warnings
+}
+
 # --- Conversion complète ------------------------------------------------------
 function Invoke-Conversion([string]$ost, [string]$pst, [bool]$withRecovered, [string]$existingExport, [bool]$keep) {
     $pst = [IO.Path]::GetFullPath($pst)
@@ -884,6 +926,10 @@ function Invoke-Conversion([string]$ost, [string]$pst, [bool]$withRecovered, [st
     if (Test-Path -LiteralPath $pst) { throw "Le fichier $pst existe déjà. Choisissez un autre nom." }
     $script:LogFile = $pst + '.log.txt'
     $script:Stats = @{ Total = 0; Done = 0; Imported = 0; Errors = 0; Skipped = 0 }
+    if ($ost) {
+        try { Write-Log ("Fichier OST : {0} ({1})" -f $ost, (Format-Size (Get-Item -LiteralPath $ost).Length)) } catch {}
+        foreach ($w in (Get-SizeWarnings $ost $pst)) { Write-Log ('ATTENTION : ' + $w) }
+    }
 
     $workDir = $null
     $script:TempAttDir = $null
@@ -1063,6 +1109,25 @@ function Show-Gui {
     $pstRow = Add-FileRow $card '2.  Fichier PST à créer' '' 2
     $txtOst = $ostRow[0]; $txtPst = $pstRow[0]
 
+    # Taille du fichier OST, affichée à droite du titre « 1. »
+    $card.SetColumnSpan($card.GetControlFromPosition(0, 0), 1)
+    $sizeLabel = New-Object Windows.Forms.Label
+    $sizeLabel.AutoSize = $true; $sizeLabel.Anchor = 'Right'; $sizeLabel.ForeColor = $muted
+    $sizeLabel.Margin = New-Object Windows.Forms.Padding(0, 4, 0, 4)
+    $card.Controls.Add($sizeLabel, 1, 0)
+    $txtOst.Add_TextChanged({
+        $sizeLabel.Text = ''
+        try {
+            if ($txtOst.Text -and (Test-Path -LiteralPath $txtOst.Text -PathType Leaf)) {
+                $len = (Get-Item -LiteralPath $txtOst.Text).Length
+                $sizeLabel.Text = 'Taille : ' + (Format-Size $len)
+                if ($len -ge $SizeMaxGB * 1GB) { $sizeLabel.ForeColor = [Drawing.Color]::FromArgb(196, 43, 28); $sizeLabel.Text += '  ⚠ très volumineux' }
+                elseif ($len -ge $SizeWarnGB * 1GB) { $sizeLabel.ForeColor = [Drawing.Color]::FromArgb(157, 93, 0); $sizeLabel.Text += '  ⚠ volumineux' }
+                else { $sizeLabel.ForeColor = $muted }
+            }
+        } catch {}
+    })
+
     $chkRec = New-Object Windows.Forms.CheckBox
     $chkRec.Text = 'Récupérer aussi les éléments supprimés (dossier « Éléments récupérés »)'
     $chkRec.AutoSize = $true; $chkRec.ForeColor = $muted
@@ -1209,6 +1274,11 @@ function Show-Gui {
         if (-not $txtOst.Text -or -not $txtPst.Text) {
             [Windows.Forms.MessageBox]::Show('Choisissez le fichier OST et le fichier PST à créer.', 'Convertisseur OST vers PST', 'OK', 'Information') | Out-Null
             return
+        }
+        $warnings = @(Get-SizeWarnings $txtOst.Text $txtPst.Text)
+        if ($warnings.Count -gt 0) {
+            $msg = "Attention :`n`n• " + ($warnings -join "`n`n• ") + "`n`nVoulez-vous lancer la conversion quand même ?"
+            if ([Windows.Forms.MessageBox]::Show($msg, 'Fichier OST volumineux', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
         }
         $btn.Enabled = $false; $btn.Text = 'Conversion en cours…'; $btn.BackColor = $muted
         $btnCancel.Text = 'Abandonner'; $btnCancel.Enabled = $true; $btnCancel.Visible = $true
